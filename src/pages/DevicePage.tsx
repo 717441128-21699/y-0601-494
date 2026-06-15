@@ -6,12 +6,23 @@ export default function DevicePage() {
   const { devices, maintenanceOrders, loadDevices, loadMaintenanceOrders } = useAppStore()
   const [activeTab, setActiveTab] = useState<'devices' | 'maintenance'>('devices')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [deviceFilter, setDeviceFilter] = useState<string>('all')
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null)
   const [showLogModal, setShowLogModal] = useState(false)
   const [logForm, setLogForm] = useState({ duration: '', operator: '' })
   const [showOrderModal, setShowOrderModal] = useState(false)
   const [orderForm, setOrderForm] = useState({
     deviceId: '', teamId: '', priority: 'normal', description: '', scheduledDate: ''
+  })
+
+  const [showDetailModal, setShowDetailModal] = useState(false)
+  const [detailOrder, setDetailOrder] = useState<MaintenanceOrder | null>(null)
+  const [detailForm, setDetailForm] = useState({
+    repair_content: '',
+    materials_used: '',
+    person_in_charge: '',
+    next_maintenance_date: '',
+    cost_amount: ''
   })
 
   const statusLabels: Record<string, { label: string; cls: string }> = {
@@ -21,11 +32,14 @@ export default function DevicePage() {
     fault: { label: '故障', cls: 'badge-red' }
   }
 
-  const priorityLabels: Record<string, { label: string; cls: string }> = {
-    low: { label: '低', cls: 'badge-gray' },
-    normal: { label: '普通', cls: 'badge-blue' },
-    high: { label: '高', cls: 'badge-orange' },
-    urgent: { label: '紧急', cls: 'badge-red' }
+  const getPriorityLabel = (priority: string) => {
+    const map: Record<string, { label: string; cls: string }> = {
+      low: { label: '低', cls: 'badge-gray' },
+      normal: { label: '普通', cls: 'badge-blue' },
+      high: { label: '高', cls: 'badge-orange' },
+      urgent: { label: '紧急', cls: 'badge-red' }
+    }
+    return map[priority] || { label: priority || '普通', cls: 'badge-gray' }
   }
 
   const orderStatusLabels: Record<string, { label: string; cls: string }> = {
@@ -38,6 +52,14 @@ export default function DevicePage() {
   const filteredDevices = devices.filter(d =>
     statusFilter === 'all' ? true : d.status === statusFilter
   )
+
+  const filteredOrders = maintenanceOrders.filter(o =>
+    deviceFilter === 'all' ? true : o.device_id === parseInt(deviceFilter)
+  )
+
+  const pendingOrders = filteredOrders.filter(o => o.status === 'pending')
+  const inProgressOrders = filteredOrders.filter(o => o.status === 'in_progress')
+  const completedOrders = filteredOrders.filter(o => o.status === 'completed')
 
   const totalRuntime = devices.reduce((s, d) => s + d.total_run_hours, 0)
   const needsMaintenance = devices.filter(d => d.status === 'needs_maintenance').length
@@ -110,31 +132,58 @@ export default function DevicePage() {
     }
   }
 
-  const handleOrderStatus = async (order: MaintenanceOrder, newStatus: string) => {
-    const updates = newStatus === 'completed'
-      ? [newStatus, new Date().toISOString().split('T')[0], order.id]
-      : [newStatus, order.id]
-    const sql = newStatus === 'completed'
-      ? 'UPDATE maintenance_orders SET status = ?, completed_date = ? WHERE id = ?'
-      : 'UPDATE maintenance_orders SET status = ? WHERE id = ?'
+  const openOrderDetail = (order: MaintenanceOrder) => {
+    setDetailOrder(order)
+    setDetailForm({
+      repair_content: (order as any).repair_content || '',
+      materials_used: (order as any).materials_used || '',
+      person_in_charge: (order as any).person_in_charge || '',
+      next_maintenance_date: (order as any).next_maintenance_date || '',
+      cost_amount: (order as any).cost_amount ? String((order as any).cost_amount) : ''
+    })
+    setShowDetailModal(true)
+  }
 
-    const result = await window.api.query(sql, updates as any)
+  const handleUpdateOrderStatus = async (newStatus: string) => {
+    if (!detailOrder) return
+
+    const updateData: any = { id: detailOrder.id, status: newStatus }
+    if (newStatus === 'completed') {
+      updateData.repair_content = detailForm.repair_content
+      updateData.materials_used = detailForm.materials_used
+      updateData.person_in_charge = detailForm.person_in_charge
+      updateData.next_maintenance_date = detailForm.next_maintenance_date || null
+      updateData.cost_amount = detailForm.cost_amount ? parseFloat(detailForm.cost_amount) : 0
+    }
+
+    const result = await window.api.device.updateMaintenanceOrder(updateData)
     if (result.success) {
-      if (newStatus === 'completed') {
-        await window.api.query(
-          `UPDATE devices SET status = 'normal', total_run_hours = 0, last_maintenance_date = ? 
-           WHERE id = (SELECT device_id FROM maintenance_orders WHERE id = ?)`,
-          [new Date().toISOString().split('T')[0], order.id]
-        )
-        await loadDevices()
-      }
+      alert('✅ 工单状态已更新')
+      setShowDetailModal(false)
       await loadMaintenanceOrders()
+      await loadDevices()
+    } else {
+      alert(result.error || '更新失败')
     }
   }
 
-  const pendingOrders = maintenanceOrders.filter(o => o.status === 'pending')
-  const inProgressOrders = maintenanceOrders.filter(o => o.status === 'in_progress')
-  const completedOrders = maintenanceOrders.filter(o => o.status === 'completed')
+  const handleSaveOrderDetail = async () => {
+    if (!detailOrder) return
+    const result = await window.api.device.updateMaintenanceOrder({
+      id: detailOrder.id,
+      repair_content: detailForm.repair_content,
+      materials_used: detailForm.materials_used,
+      person_in_charge: detailForm.person_in_charge,
+      next_maintenance_date: detailForm.next_maintenance_date || null,
+      cost_amount: detailForm.cost_amount ? parseFloat(detailForm.cost_amount) : 0
+    })
+    if (result.success) {
+      alert('✅ 工单详情已保存')
+      await loadMaintenanceOrders()
+    } else {
+      alert(result.error || '保存失败')
+    }
+  }
 
   return (
     <div className="space-y-6 h-full flex flex-col">
@@ -220,6 +269,16 @@ export default function DevicePage() {
                 </>
               ) : (
                 <>
+                  <select
+                    className="input !w-48 !py-1.5 text-sm"
+                    value={deviceFilter}
+                    onChange={e => setDeviceFilter(e.target.value)}
+                  >
+                    <option value="all">全部设备</option>
+                    {devices.map(d => (
+                      <option key={d.id} value={d.id}>{d.name}（{d.model}）</option>
+                    ))}
+                  </select>
                   <button className="btn-secondary text-sm" onClick={handleGenerateOrders}>
                     🤖 自动生成工单
                   </button>
@@ -245,7 +304,7 @@ export default function DevicePage() {
               <div className="grid grid-cols-3 gap-4 p-5">
                 {filteredDevices.map(device => {
                   const utilization = (device.total_run_hours / device.maintenance_interval_hours) * 100
-                  const status = statusLabels[device.status]
+                  const status = statusLabels[device.status] || { label: device.status, cls: 'badge-gray' }
                   return (
                     <div
                       key={device.id}
@@ -316,22 +375,15 @@ export default function DevicePage() {
                           >
                             📝 记录使用
                           </button>
-                          {device.status !== 'normal' && (
-                            <button
-                              className="btn-warning !py-1.5 text-xs flex-1"
-                              onClick={() => {
-                                setOrderForm(prev => ({
-                                  ...prev,
-                                  deviceId: String(device.id),
-                                  priority: utilization >= 120 ? 'high' : 'normal',
-                                  scheduledDate: new Date(Date.now() + 86400000).toISOString().split('T')[0]
-                                }))
-                                setShowOrderModal(true)
-                              }}
-                            >
-                              🔧 发起维保
-                            </button>
-                          )}
+                          <button
+                            className="btn-primary !py-1.5 text-xs flex-1"
+                            onClick={() => {
+                              setDeviceFilter(String(device.id))
+                              setActiveTab('maintenance')
+                            }}
+                          >
+                            📋 查看工单
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -350,7 +402,7 @@ export default function DevicePage() {
                 {[
                   { key: 'pending', label: '📋 待处理', orders: pendingOrders, color: 'amber' },
                   { key: 'in_progress', label: '🔧 处理中', orders: inProgressOrders, color: 'blue' },
-                  { key: 'completed', label: '✅ 已完成', orders: completedOrders.slice(0, 5), color: 'green' }
+                  { key: 'completed', label: '✅ 已完成', orders: completedOrders.slice(0, 10), color: 'green' }
                 ].map(group => (
                   group.orders.length > 0 && (
                     <div key={group.key}>
@@ -360,8 +412,8 @@ export default function DevicePage() {
                       </h4>
                       <div className="grid grid-cols-2 gap-3">
                         {group.orders.map(order => {
-                          const priority = priorityLabels[order.priority]
-                          const status = orderStatusLabels[order.status]
+                          const priority = getPriorityLabel(order.priority)
+                          const status = orderStatusLabels[order.status] || { label: order.status, cls: 'badge-gray' }
                           return (
                             <div key={order.id} className="bg-white rounded-xl border border-gray-200 p-4 hover:shadow-md transition-all">
                               <div className="flex justify-between items-start mb-3">
@@ -390,6 +442,12 @@ export default function DevicePage() {
                                     <span className="font-mono text-green-600">{order.completed_date}</span>
                                   </div>
                                 )}
+                                {(order as any).person_in_charge && (
+                                  <div className="flex">
+                                    <span className="text-gray-500 w-20">负责人：</span>
+                                    <span className="font-medium">{(order as any).person_in_charge}</span>
+                                  </div>
+                                )}
                               </div>
 
                               {order.description && (
@@ -398,29 +456,12 @@ export default function DevicePage() {
                                 </p>
                               )}
 
-                              {order.status === 'pending' && (
-                                <div className="flex gap-2">
-                                  <button
-                                    className="btn-primary !py-1.5 text-xs flex-1"
-                                    onClick={() => handleOrderStatus(order, 'in_progress')}
-                                  >
-                                    ▶️ 开始处理
-                                  </button>
-                                </div>
-                              )}
-                              {order.status === 'in_progress' && (
-                                <button
-                                  className="btn-success !py-1.5 text-xs w-full"
-                                  onClick={() => handleOrderStatus(order, 'completed')}
-                                >
-                                  ✅ 完成维保
-                                </button>
-                              )}
-                              {order.status === 'completed' && (
-                                <p className="text-center text-xs text-gray-400">
-                                  工单完成于 {order.completed_date}
-                                </p>
-                              )}
+                              <button
+                                className="btn-secondary !py-1.5 text-xs w-full"
+                                onClick={() => openOrderDetail(order)}
+                              >
+                                查看详情
+                              </button>
                             </div>
                           )
                         })}
@@ -494,7 +535,7 @@ export default function DevicePage() {
                   </div>
                   {selectedDevice.total_run_hours + parseFloat(logForm.duration) >= selectedDevice.maintenance_interval_hours && (
                     <p className="text-amber-700 bg-amber-50 rounded-lg p-2 text-xs">
-                      ⚠️ 达到维保周期，将自动标记为待维保状态
+                      ⚠️ 达到维保周期，将自动生成待处理维保工单并分配班组
                     </p>
                   )}
                 </div>
@@ -583,6 +624,188 @@ export default function DevicePage() {
                 onClick={handleCreateOrder}
                 disabled={!orderForm.deviceId}
               >创建工单</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDetailModal && detailOrder && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full mx-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-xl font-bold mb-4 flex items-center justify-between">
+              <span>🔧 工单详情</span>
+              <span className="text-sm font-mono text-gray-500">MO-{detailOrder.id.toString().padStart(5, '0')}</span>
+            </h3>
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">设备名称</p>
+                  <p className="font-semibold">{detailOrder.device_name}</p>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">工单状态</p>
+                  <p>
+                    <span className={orderStatusLabels[detailOrder.status]?.cls || 'badge-gray'}>
+                      {orderStatusLabels[detailOrder.status]?.label || detailOrder.status}
+                    </span>
+                  </p>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">负责班组</p>
+                  <p className="font-medium">{detailOrder.team_name || '待分配'}</p>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">优先级</p>
+                  <p>
+                    <span className={getPriorityLabel(detailOrder.priority).cls}>
+                      {getPriorityLabel(detailOrder.priority).label}
+                    </span>
+                  </p>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">计划日期</p>
+                  <p className="font-mono">{detailOrder.scheduled_date || '-'}</p>
+                </div>
+                {detailOrder.completed_date && (
+                  <div className="bg-green-50 rounded-lg p-3">
+                    <p className="text-xs text-gray-500 mb-1">完成日期</p>
+                    <p className="font-mono text-green-600">{detailOrder.completed_date}</p>
+                  </div>
+                )}
+              </div>
+
+              {detailOrder.description && (
+                <div>
+                  <label className="label">问题描述</label>
+                  <div className="bg-gray-50 rounded-lg p-3 text-sm">
+                    {detailOrder.description}
+                  </div>
+                </div>
+              )}
+
+              {detailOrder.status !== 'completed' ? (
+                <>
+                  <div>
+                    <label className="label">维修内容</label>
+                    <textarea
+                      className="input min-h-[70px] text-sm"
+                      value={detailForm.repair_content}
+                      onChange={e => setDetailForm(prev => ({ ...prev, repair_content: e.target.value }))}
+                      placeholder="请记录维修过程和内容..."
+                    />
+                  </div>
+                  <div>
+                    <label className="label">使用耗材</label>
+                    <textarea
+                      className="input min-h-[60px] text-sm"
+                      value={detailForm.materials_used}
+                      onChange={e => setDetailForm(prev => ({ ...prev, materials_used: e.target.value }))}
+                      placeholder="如: 滤芯×1, 润滑油×2..."
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="label">负责人</label>
+                      <input
+                        className="input text-sm"
+                        value={detailForm.person_in_charge}
+                        onChange={e => setDetailForm(prev => ({ ...prev, person_in_charge: e.target.value }))}
+                        placeholder="维修人员姓名"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">维保费用（元）</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="input text-sm"
+                        value={detailForm.cost_amount}
+                        onChange={e => setDetailForm(prev => ({ ...prev, cost_amount: e.target.value }))}
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="label">下次维保日期</label>
+                    <input
+                      type="date"
+                      className="input text-sm"
+                      value={detailForm.next_maintenance_date}
+                      onChange={e => setDetailForm(prev => ({ ...prev, next_maintenance_date: e.target.value }))}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  {(detailOrder as any).repair_content && (
+                    <div>
+                      <label className="label">维修内容</label>
+                      <div className="bg-gray-50 rounded-lg p-3 text-sm">
+                        {(detailOrder as any).repair_content}
+                      </div>
+                    </div>
+                  )}
+                  {(detailOrder as any).materials_used && (
+                    <div>
+                      <label className="label">使用耗材</label>
+                      <div className="bg-gray-50 rounded-lg p-3 text-sm">
+                        {(detailOrder as any).materials_used}
+                      </div>
+                    </div>
+                  )}
+                  {((detailOrder as any).person_in_charge || (detailOrder as any).cost_amount) && (
+                    <div className="grid grid-cols-2 gap-3">
+                      {(detailOrder as any).person_in_charge && (
+                        <div className="bg-gray-50 rounded-lg p-3">
+                          <p className="text-xs text-gray-500 mb-1">负责人</p>
+                          <p className="font-medium">{(detailOrder as any).person_in_charge}</p>
+                        </div>
+                      )}
+                      {(detailOrder as any).cost_amount !== undefined && (
+                        <div className="bg-gray-50 rounded-lg p-3">
+                          <p className="text-xs text-gray-500 mb-1">维保费用</p>
+                          <p className="font-mono font-bold text-red-600">¥{parseFloat((detailOrder as any).cost_amount).toFixed(2)}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {(detailOrder as any).next_maintenance_date && (
+                    <div className="bg-blue-50 rounded-lg p-3">
+                      <p className="text-xs text-gray-500 mb-1">下次维保日期</p>
+                      <p className="font-mono font-semibold text-blue-600">{(detailOrder as any).next_maintenance_date}</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button className="btn-secondary flex-1" onClick={() => setShowDetailModal(false)}>
+                关闭
+              </button>
+
+              {detailOrder.status === 'pending' && (
+                <button className="btn-primary flex-1" onClick={() => handleUpdateOrderStatus('in_progress')}>
+                  ▶️ 开始处理
+                </button>
+              )}
+              {detailOrder.status === 'in_progress' && (
+                <>
+                  <button className="btn-secondary flex-1" onClick={handleSaveOrderDetail}>
+                    💾 暂存
+                  </button>
+                  <button className="btn-success flex-1" onClick={() => {
+                    if (!detailForm.repair_content) {
+                      alert('请填写维修内容')
+                      return
+                    }
+                    handleUpdateOrderStatus('completed')
+                  }}>
+                    ✅ 完成维保
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

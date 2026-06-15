@@ -31,7 +31,7 @@ export default defineConfig({
           }
         }
       },
-      renderer: true
+      renderer: {}
     })
   ],
   resolve: {

@@ -189,11 +189,16 @@ export interface MaintenanceOrder {
   device_id: number
   team_id?: number
   order_type: string
-  priority: 'low' | 'normal' | 'high' | 'urgent'
+  priority: 'low' | 'normal' | 'medium' | 'high' | 'urgent' | string
   description?: string
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
   scheduled_date?: string
   completed_date?: string
+  repair_content?: string
+  materials_used?: string
+  person_in_charge?: string
+  next_maintenance_date?: string
+  cost_amount?: number
   created_at?: string
   device_name?: string
   team_name?: string
@@ -241,10 +246,22 @@ declare global {
       payment: {
         create: (data: any) => Promise<any>
         calculateDiscount: (data: any) => Promise<any>
+        voidPayment: (data: { paymentId: number; reason?: string }) => Promise<any>
+        history: (data: {
+          ownerId?: number; petName?: string; queueNumber?: string;
+          startDate?: string; endDate?: string; page?: number; pageSize?: number
+        }) => Promise<any>
       }
       device: {
         logUsage: (data: any) => Promise<any>
         generateMaintenance: () => Promise<any>
+        updateMaintenanceOrder: (data: {
+          id: number; status?: string | null; repair_content?: string | null;
+          materials_used?: string | null; person_in_charge?: string | null;
+          next_maintenance_date?: string | null; cost_amount?: number | null;
+          description?: string | null; priority?: string | null; scheduled_date?: string | null;
+          team_id?: number | null
+        }) => Promise<any>
       }
       statistics: {
         doctor: (data?: any) => Promise<any>

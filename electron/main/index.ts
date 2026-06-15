@@ -103,6 +103,10 @@ function registerIpcHandlers() {
   ipcMain.handle('statistics:doctor', handleDoctorStatistics)
   ipcMain.handle('statistics:department', handleDepartmentStatistics)
   ipcMain.handle('statistics:roomHeatmap', handleRoomHeatmap)
+
+  ipcMain.handle('payment:void', handleVoidPayment)
+  ipcMain.handle('payment:history', handlePaymentHistory)
+  ipcMain.handle('maintenance:updateOrder', handleUpdateMaintenanceOrder)
 }
 
 function handleCreateRegistration(_e: any, data: {
@@ -441,7 +445,7 @@ function handleCreatePayment(_e: any, data: {
   try {
     if (data.registrationId) {
       const existing = db.prepare(
-        'SELECT id FROM payments WHERE registration_id = ? LIMIT 1'
+        "SELECT id FROM payments WHERE registration_id = ? AND status = 'paid' LIMIT 1"
       ).get(data.registrationId) as any
       if (existing) {
         return { success: false, error: '该病例已完成收费，不能重复支付' }
@@ -619,6 +623,7 @@ function handleDoctorStatistics(_e: any, data: { startDate?: string; endDate?: s
           SELECT SUM(p.final_amount) 
           FROM payments p
           WHERE DATE(p.paid_at) BETWEEN ? AND ?
+            AND p.status = 'paid'
             AND p.registration_id IN (
               SELECT DISTINCT r2.id FROM registrations r2 WHERE r2.doctor_id = d.id
             )
@@ -653,6 +658,7 @@ function handleDepartmentStatistics(_e: any, data: { startDate?: string; endDate
           SELECT SUM(p.final_amount) 
           FROM payments p
           WHERE DATE(p.paid_at) BETWEEN ? AND ?
+            AND p.status = 'paid'
             AND p.registration_id IN (
               SELECT DISTINCT r2.id FROM registrations r2 WHERE r2.department_id = d.id
             )
@@ -693,6 +699,164 @@ function handleRoomHeatmap() {
     `).all()
 
     return { success: true, data: rooms }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+function handleVoidPayment(_e: any, data: { paymentId: number; reason?: string }) {
+  try {
+    const tx = db.transaction(() => {
+      const payment = db.prepare('SELECT * FROM payments WHERE id = ?').get(data.paymentId) as any
+      if (!payment) {
+        throw new Error('支付记录不存在')
+      }
+      if (payment.status === 'voided') {
+        throw new Error('该收据已作废，不能重复作废')
+      }
+
+      db.prepare(`
+        UPDATE payments SET status = 'voided', void_reason = ?, void_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(data.reason || '操作员作废', data.paymentId)
+
+      if (payment.owner_id && payment.points_earned) {
+        db.prepare(`
+          UPDATE pet_owners SET points = points - ?, total_spent = total_spent - ?
+          WHERE id = ?
+        `).run(payment.points_earned, payment.final_amount, payment.owner_id)
+      }
+    })
+
+    tx()
+    return { success: true, message: '收据已作废' }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+function handlePaymentHistory(_e: any, data: {
+  ownerId?: number; petName?: string; queueNumber?: string;
+  startDate?: string; endDate?: string; page?: number; pageSize?: number
+}) {
+  try {
+    const conditions: string[] = ["p.status = 'paid'"]
+    const params: any[] = []
+
+    if (data.ownerId) {
+      conditions.push('p.owner_id = ?')
+      params.push(data.ownerId)
+    }
+    if (data.petName) {
+      conditions.push('pet.name LIKE ?')
+      params.push('%' + data.petName + '%')
+    }
+    if (data.queueNumber) {
+      conditions.push('r.queue_number LIKE ?')
+      params.push('%' + data.queueNumber + '%')
+    }
+    if (data.startDate) {
+      conditions.push('DATE(p.paid_at) >= ?')
+      params.push(data.startDate)
+    }
+    if (data.endDate) {
+      conditions.push('DATE(p.paid_at) <= ?')
+      params.push(data.endDate)
+    }
+
+    const whereSql = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''
+
+    const total = db.prepare(`
+      SELECT COUNT(*) as count FROM payments p
+      LEFT JOIN registrations r ON p.registration_id = r.id
+      LEFT JOIN pets pet ON r.pet_id = pet.id
+      ${whereSql}
+    `).get(...params) as { count: number }
+
+    const page = data.page || 1
+    const pageSize = data.pageSize || 20
+    const offset = (page - 1) * pageSize
+
+    const list = db.prepare(`
+      SELECT p.*, po.name as owner_name, po.phone as owner_phone,
+             r.queue_number, pet.name as pet_name, pet.species
+      FROM payments p
+      LEFT JOIN pet_owners po ON p.owner_id = po.id
+      LEFT JOIN registrations r ON p.registration_id = r.id
+      LEFT JOIN pets pet ON r.pet_id = pet.id
+      ${whereSql}
+      ORDER BY p.paid_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, pageSize, offset)
+
+    return { success: true, data: { list, total: total.count, page, pageSize } }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+function handleUpdateMaintenanceOrder(_e: any, data: {
+  id: number; status?: string; repair_content?: string;
+  materials_used?: string; person_in_charge?: string;
+  next_maintenance_date?: string; cost_amount?: number;
+  description?: string; priority?: string; scheduled_date?: string;
+  team_id?: number
+}) {
+  try {
+    const tx = db.transaction(() => {
+      const order = db.prepare('SELECT * FROM maintenance_orders WHERE id = ?').get(data.id) as any
+      if (!order) throw new Error('工单不存在')
+
+      const updates: string[] = []
+      const params: any[] = []
+
+      if (data.status !== undefined) { updates.push('status = ?'); params.push(data.status) }
+      if (data.repair_content !== undefined) { updates.push('repair_content = ?'); params.push(data.repair_content) }
+      if (data.materials_used !== undefined) { updates.push('materials_used = ?'); params.push(data.materials_used) }
+      if (data.person_in_charge !== undefined) { updates.push('person_in_charge = ?'); params.push(data.person_in_charge) }
+      if (data.next_maintenance_date !== undefined) { updates.push('next_maintenance_date = ?'); params.push(data.next_maintenance_date) }
+      if (data.cost_amount !== undefined) { updates.push('cost_amount = ?'); params.push(data.cost_amount) }
+      if (data.description !== undefined) { updates.push('description = ?'); params.push(data.description) }
+      if (data.priority !== undefined) { updates.push('priority = ?'); params.push(data.priority) }
+      if (data.scheduled_date !== undefined) { updates.push('scheduled_date = ?'); params.push(data.scheduled_date) }
+      if (data.team_id !== undefined) { updates.push('team_id = ?'); params.push(data.team_id) }
+
+      if (data.status === 'completed') {
+        updates.push('completed_date = ?')
+        params.push(new Date().toISOString().split('T')[0])
+      }
+
+      if (updates.length > 0) {
+        params.push(data.id)
+        db.prepare(`UPDATE maintenance_orders SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+      }
+
+      if (data.status === 'completed') {
+        db.prepare(`
+          UPDATE devices SET status = 'normal', total_run_hours = 0, last_maintenance_date = ?
+          WHERE id = (SELECT device_id FROM maintenance_orders WHERE id = ?)
+        `).run(new Date().toISOString().split('T')[0], data.id)
+      }
+
+      if (data.status && data.status !== 'completed') {
+        const device = db.prepare(`
+          SELECT d.* FROM devices d
+          JOIN maintenance_orders mo ON d.id = mo.device_id
+          WHERE mo.id = ?
+        `).get(data.id) as any
+        if (device) {
+          let newStatus = device.status
+          if (data.status === 'in_progress') newStatus = 'in_maintenance'
+          else if (data.status === 'pending') newStatus = 'needs_maintenance'
+          if (newStatus !== device.status) {
+            db.prepare('UPDATE devices SET status = ? WHERE id = ?').run(newStatus, device.id)
+          }
+        }
+      }
+    })
+
+    tx()
+    return { success: true }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

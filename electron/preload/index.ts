@@ -38,13 +38,26 @@ export const api = {
     }) => ipcRenderer.invoke('payment:create', data),
     calculateDiscount: (data: {
       ownerId: number; items: Array<{ type: string; id?: number; name: string; unitPrice: number; quantity: number }>; packageId?: number
-    }) => ipcRenderer.invoke('discount:calculate', data)
+    }) => ipcRenderer.invoke('discount:calculate', data),
+    voidPayment: (data: { paymentId: number; reason?: string }) =>
+      ipcRenderer.invoke('payment:void', data),
+    history: (data: {
+      ownerId?: number; petName?: string; queueNumber?: string;
+      startDate?: string; endDate?: string; page?: number; pageSize?: number
+    }) => ipcRenderer.invoke('payment:history', data)
   },
 
   device: {
     logUsage: (data: { deviceId: number; durationHours: number; operator: string }) =>
       ipcRenderer.invoke('device:logUsage', data),
-    generateMaintenance: () => ipcRenderer.invoke('maintenance:generate')
+    generateMaintenance: () => ipcRenderer.invoke('maintenance:generate'),
+    updateMaintenanceOrder: (data: {
+      id: number; status?: string; repair_content?: string;
+      materials_used?: string; person_in_charge?: string;
+      next_maintenance_date?: string; cost_amount?: number;
+      description?: string; priority?: string; scheduled_date?: string;
+      team_id?: number
+    }) => ipcRenderer.invoke('maintenance:updateOrder', data)
   },
 
   statistics: {

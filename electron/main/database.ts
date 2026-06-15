@@ -252,6 +252,11 @@ function initializeDatabase(db: Database.Database) {
       status TEXT DEFAULT 'pending',
       scheduled_date DATE,
       completed_date DATE,
+      repair_content TEXT,
+      materials_used TEXT,
+      person_in_charge TEXT,
+      next_maintenance_date DATE,
+      cost_amount REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (device_id) REFERENCES devices(id),
       FOREIGN KEY (team_id) REFERENCES maintenance_teams(id)
@@ -269,7 +274,35 @@ function initializeDatabase(db: Database.Database) {
     );
   `)
 
+  migrateDatabase(db)
   seedInitialData(db)
+}
+
+function migrateDatabase(db: Database.Database) {
+  const cols = db.prepare("PRAGMA table_info(maintenance_orders)").all() as { name: string }[]
+  const colNames = new Set(cols.map(c => c.name))
+
+  const addCol = (sql: string) => {
+    try { db.exec(sql) } catch { /* column exists */ }
+  }
+
+  if (!colNames.has('repair_content')) addCol('ALTER TABLE maintenance_orders ADD COLUMN repair_content TEXT')
+  if (!colNames.has('materials_used')) addCol('ALTER TABLE maintenance_orders ADD COLUMN materials_used TEXT')
+  if (!colNames.has('person_in_charge')) addCol('ALTER TABLE maintenance_orders ADD COLUMN person_in_charge TEXT')
+  if (!colNames.has('next_maintenance_date')) addCol('ALTER TABLE maintenance_orders ADD COLUMN next_maintenance_date DATE')
+  if (!colNames.has('cost_amount')) addCol('ALTER TABLE maintenance_orders ADD COLUMN cost_amount REAL DEFAULT 0')
+
+  const payCols = db.prepare("PRAGMA table_info(payments)").all() as { name: string }[]
+  const payColNames = new Set(payCols.map(c => c.name))
+  if (!payColNames.has('status')) {
+    try { db.exec('ALTER TABLE payments ADD COLUMN status TEXT DEFAULT \'paid\'') } catch { /* exist */ }
+  }
+  if (!payColNames.has('void_reason')) {
+    try { db.exec('ALTER TABLE payments ADD COLUMN void_reason TEXT') } catch { /* exist */ }
+  }
+  if (!payColNames.has('void_at')) {
+    try { db.exec('ALTER TABLE payments ADD COLUMN void_at DATETIME') } catch { /* exist */ }
+  }
 }
 
 function seedInitialData(db: Database.Database) {
