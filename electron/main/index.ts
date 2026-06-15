@@ -439,6 +439,15 @@ function handleCreatePayment(_e: any, data: {
   paymentMethod: string; packageId?: number; pointsEarned?: number
 }) {
   try {
+    if (data.registrationId) {
+      const existing = db.prepare(
+        'SELECT id FROM payments WHERE registration_id = ? LIMIT 1'
+      ).get(data.registrationId) as any
+      if (existing) {
+        return { success: false, error: '该病例已完成收费，不能重复支付' }
+      }
+    }
+
     const tx = db.transaction(() => {
       const receiptNumber = 'RCP' + Date.now().toString().slice(-10)
       
@@ -482,6 +491,8 @@ function handleCreatePayment(_e: any, data: {
 function handleLogDeviceUsage(_e: any, data: { deviceId: number; durationHours: number; operator: string }) {
   try {
     const tx = db.transaction(() => {
+      const deviceBefore = db.prepare('SELECT * FROM devices WHERE id = ?').get(data.deviceId) as any
+
       db.prepare(`
         INSERT INTO device_usage_logs (device_id, start_time, end_time, duration_hours, operator)
         VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)
@@ -491,10 +502,9 @@ function handleLogDeviceUsage(_e: any, data: { deviceId: number; durationHours: 
         UPDATE devices SET total_run_hours = total_run_hours + ? WHERE id = ?
       `).run(data.durationHours, data.deviceId)
 
-      const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(data.deviceId) as any
-      const newTotalHours = device.total_run_hours + data.durationHours
+      const newTotalHours = deviceBefore.total_run_hours + data.durationHours
 
-      if (newTotalHours >= device.maintenance_interval_hours) {
+      if (newTotalHours >= deviceBefore.maintenance_interval_hours) {
         db.prepare(`UPDATE devices SET status = 'needs_maintenance' WHERE id = ?`).run(data.deviceId)
 
         const lastOrder = db.prepare(`
@@ -508,14 +518,14 @@ function handleLogDeviceUsage(_e: any, data: { deviceId: number; durationHours: 
 
         if (needNewOrder) {
           const teams = db.prepare('SELECT * FROM maintenance_teams').all() as any[]
-          const deptId = device.department_id
+          const deptId = deviceBefore.department_id
           let teamIndex = 0
           if (deptId === 7) teamIndex = 2
           else if (deptId === 8) teamIndex = 3
-          else teamIndex = (device.id % teams.length)
+          else teamIndex = (deviceBefore.id % teams.length)
 
           const team = teams[teamIndex % teams.length]
-          const priority = newTotalHours >= device.maintenance_interval_hours * 1.2 ? 'high' : 'normal'
+          const priority = newTotalHours >= deviceBefore.maintenance_interval_hours * 1.2 ? 'high' : 'normal'
           const scheduledDate = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
 
           db.prepare(`
@@ -523,8 +533,8 @@ function handleLogDeviceUsage(_e: any, data: { deviceId: number; durationHours: 
             (device_id, team_id, order_type, priority, description, status, scheduled_date)
             VALUES (?, ?, 'routine', ?, ?, 'pending', ?)
           `).run(
-            device.id, team.id, priority,
-            `设备【${device.name}】累计运行${newTotalHours.toFixed(1)}小时，已达维保周期（${device.maintenance_interval_hours}小时），请及时安排维护保养`,
+            deviceBefore.id, team.id, priority,
+            `设备【${deviceBefore.name}】累计运行${newTotalHours.toFixed(1)}小时，已达维保周期（${deviceBefore.maintenance_interval_hours}小时），请及时安排维护保养`,
             scheduledDate
           )
         }
@@ -608,10 +618,10 @@ function handleDoctorStatistics(_e: any, data: { startDate?: string; endDate?: s
         COALESCE((
           SELECT SUM(p.final_amount) 
           FROM payments p
-          WHERE p.registration_id IN (
-            SELECT DISTINCT r2.id FROM registrations r2 WHERE r2.doctor_id = d.id
-              AND DATE(r2.completed_at) BETWEEN ? AND ?
-          )
+          WHERE DATE(p.paid_at) BETWEEN ? AND ?
+            AND p.registration_id IN (
+              SELECT DISTINCT r2.id FROM registrations r2 WHERE r2.doctor_id = d.id
+            )
         ), 0) as total_income
       FROM doctors d
       LEFT JOIN departments dep ON d.department_id = dep.id
@@ -642,10 +652,10 @@ function handleDepartmentStatistics(_e: any, data: { startDate?: string; endDate
         COALESCE((
           SELECT SUM(p.final_amount) 
           FROM payments p
-          WHERE p.registration_id IN (
-            SELECT DISTINCT r2.id FROM registrations r2 WHERE r2.department_id = d.id
-              AND DATE(r2.completed_at) BETWEEN ? AND ?
-          )
+          WHERE DATE(p.paid_at) BETWEEN ? AND ?
+            AND p.registration_id IN (
+              SELECT DISTINCT r2.id FROM registrations r2 WHERE r2.department_id = d.id
+            )
         ), 0) as total_income
       FROM departments d
       LEFT JOIN registrations r ON d.id = r.department_id 

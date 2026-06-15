@@ -1,14 +1,31 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAppStore } from '../store/useAppStore'
-import type { Registration, PaymentItem } from '../types'
+import type { PaymentItem } from '../types'
+
+interface CompletedReg {
+  id: number
+  queue_number: string
+  pet_name: string
+  species: string
+  breed: string
+  owner_id: number
+  owner_name: string
+  doctor_id: number
+  doctor_name: string
+  department_id: number
+  department_name: string
+  urgency_level: number
+  completed_at: string
+  status: string
+}
 
 export default function PaymentPage() {
   const { regId } = useParams()
   const navigate = useNavigate()
-  const { registrations, owners, packages, medicines, services, loadOwners, loadQueue, loadData } = useAppStore()
+  const { owners, packages, loadOwners, loadData } = useAppStore()
 
-  const [selectedReg, setSelectedReg] = useState<Registration | null>(null)
+  const [selectedReg, setSelectedReg] = useState<CompletedReg | null>(null)
   const [selectedOwnerId, setSelectedOwnerId] = useState<number | ''>('')
   const [selectedPackageId, setSelectedPackageId] = useState<number | ''>('')
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'insurance' | 'wechat' | 'alipay' | 'card'>('wechat')
@@ -17,32 +34,63 @@ export default function PaymentPage() {
   const [receiptInfo, setReceiptInfo] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [alreadyPaid, setAlreadyPaid] = useState<any>(null)
-  const [paidRegIds, setPaidRegIds] = useState<Set<number>>(new Set())
+  const [completedRegs, setCompletedRegs] = useState<CompletedReg[]>([])
+
+  const fetchUnpaidRegs = async () => {
+    const result = await window.api.query(`
+      SELECT r.id, r.queue_number, r.urgency_level, r.status, r.completed_at,
+             r.owner_id, r.doctor_id, r.department_id,
+             p.name as pet_name, p.species, p.breed,
+             po.name as owner_name,
+             d.name as doctor_name,
+             dep.name as department_name
+      FROM registrations r
+      LEFT JOIN pets p ON r.pet_id = p.id
+      LEFT JOIN pet_owners po ON r.owner_id = po.id
+      LEFT JOIN doctors d ON r.doctor_id = d.id
+      LEFT JOIN departments dep ON r.department_id = dep.id
+      WHERE r.status = 'completed'
+        AND r.id NOT IN (SELECT registration_id FROM payments WHERE registration_id IS NOT NULL)
+      ORDER BY r.completed_at DESC
+    `)
+    if (result.success && result.data) {
+      setCompletedRegs(result.data)
+    }
+  }
 
   useEffect(() => {
-    const fetchPaidIds = async () => {
-      const result = await window.api.query(
-        'SELECT DISTINCT registration_id FROM payments WHERE registration_id IS NOT NULL'
-      )
-      if (result.success && result.data) {
-        setPaidRegIds(new Set(result.data.map((r: any) => r.registration_id)))
-      }
-    }
-    fetchPaidIds()
+    fetchUnpaidRegs()
   }, [])
 
-  const completedRegs = registrations.filter(r => r.status === 'completed' && !paidRegIds.has(r.id))
-
   useEffect(() => {
-    if (regId && registrations.length > 0) {
-      const reg = registrations.find(r => r.id === parseInt(regId))
-      if (reg) {
-        setSelectedReg(reg)
-        setSelectedOwnerId(reg.owner_id)
-        checkAndLoadItems(reg.id, reg.owner_id)
-      }
+    if (regId) {
+      const regIdNum = parseInt(regId)
+      loadRegById(regIdNum)
     }
-  }, [regId, registrations, paidRegIds])
+  }, [regId])
+
+  const loadRegById = async (id: number) => {
+    const regResult = await window.api.query(`
+      SELECT r.id, r.queue_number, r.urgency_level, r.status, r.completed_at,
+             r.owner_id, r.doctor_id, r.department_id,
+             p.name as pet_name, p.species, p.breed,
+             po.name as owner_name,
+             d.name as doctor_name,
+             dep.name as department_name
+      FROM registrations r
+      LEFT JOIN pets p ON r.pet_id = p.id
+      LEFT JOIN pet_owners po ON r.owner_id = po.id
+      LEFT JOIN doctors d ON r.doctor_id = d.id
+      LEFT JOIN departments dep ON r.department_id = dep.id
+      WHERE r.id = ?
+    `, [id])
+    if (regResult.success && regResult.data && regResult.data.length > 0) {
+      const reg = regResult.data[0]
+      setSelectedReg(reg)
+      setSelectedOwnerId(reg.owner_id)
+      checkAndLoadItems(reg.id, reg.owner_id)
+    }
+  }
 
   const checkAndLoadItems = async (registrationId: number, ownerId: number) => {
     setLoading(true)
@@ -272,15 +320,8 @@ export default function PaymentPage() {
 
       setReceiptInfo(result.data)
       await loadOwners()
-      await loadQueue()
       await loadData()
-
-      const paidResult = await window.api.query(
-        'SELECT DISTINCT registration_id FROM payments WHERE registration_id IS NOT NULL'
-      )
-      if (paidResult.success && paidResult.data) {
-        setPaidRegIds(new Set(paidResult.data.map((r: any) => r.registration_id)))
-      }
+      await fetchUnpaidRegs()
     } catch (e: any) {
       alert(e.message)
     } finally {
@@ -474,6 +515,8 @@ export default function PaymentPage() {
                     setSelectedReg(reg)
                     setSelectedOwnerId(reg.owner_id)
                     setSelectedPackageId('')
+                    setItems([])
+                    setDiscountResult(null)
                     checkAndLoadItems(reg.id, reg.owner_id)
                     navigate(`/payment/${reg.id}`)
                   }}

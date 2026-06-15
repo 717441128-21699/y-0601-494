@@ -30,14 +30,12 @@ export default function StatisticsPage() {
         window.api.statistics.doctor(params),
         window.api.statistics.department(params),
         window.api.query(`
-          SELECT DATE(completed_at) as date,
-                 COUNT(*) as patients,
-                 COALESCE(SUM((
-                   SELECT SUM(p.final_amount) FROM payments p WHERE p.registration_id = r.id
-                 )), 0) as income
-          FROM registrations r
-          WHERE status = 'completed' AND DATE(completed_at) BETWEEN ? AND ?
-          GROUP BY DATE(completed_at)
+          SELECT DATE(paid_at) as date,
+                 COUNT(DISTINCT registration_id) as patients,
+                 SUM(final_amount) as income
+          FROM payments
+          WHERE DATE(paid_at) BETWEEN ? AND ?
+          GROUP BY DATE(paid_at)
           ORDER BY date
         `, [dateRange.start, dateRange.end])
       ])
