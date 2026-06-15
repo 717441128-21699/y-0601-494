@@ -16,19 +16,61 @@ export default function PaymentPage() {
   const [discountResult, setDiscountResult] = useState<any>(null)
   const [receiptInfo, setReceiptInfo] = useState<any>(null)
   const [loading, setLoading] = useState(false)
-
-  const completedRegs = registrations.filter(r => r.status === 'completed')
+  const [alreadyPaid, setAlreadyPaid] = useState<any>(null)
+  const [paidRegIds, setPaidRegIds] = useState<Set<number>>(new Set())
 
   useEffect(() => {
-    if (regId) {
+    const fetchPaidIds = async () => {
+      const result = await window.api.query(
+        'SELECT DISTINCT registration_id FROM payments WHERE registration_id IS NOT NULL'
+      )
+      if (result.success && result.data) {
+        setPaidRegIds(new Set(result.data.map((r: any) => r.registration_id)))
+      }
+    }
+    fetchPaidIds()
+  }, [])
+
+  const completedRegs = registrations.filter(r => r.status === 'completed' && !paidRegIds.has(r.id))
+
+  useEffect(() => {
+    if (regId && registrations.length > 0) {
       const reg = registrations.find(r => r.id === parseInt(regId))
       if (reg) {
         setSelectedReg(reg)
         setSelectedOwnerId(reg.owner_id)
-        loadPaymentItems(reg.id, reg.owner_id)
+        checkAndLoadItems(reg.id, reg.owner_id)
       }
     }
-  }, [regId, registrations])
+  }, [regId, registrations, paidRegIds])
+
+  const checkAndLoadItems = async (registrationId: number, ownerId: number) => {
+    setLoading(true)
+    setAlreadyPaid(null)
+    try {
+      const payResult = await window.api.query(
+        'SELECT * FROM payments WHERE registration_id = ? ORDER BY paid_at DESC LIMIT 1',
+        [registrationId]
+      )
+      if (payResult.success && payResult.data && payResult.data.length > 0) {
+        const payment = payResult.data[0]
+        const itemsResult = await window.api.query(
+          'SELECT * FROM payment_items WHERE payment_id = ?',
+          [payment.id]
+        )
+        setAlreadyPaid({
+          payment,
+          items: itemsResult.success ? itemsResult.data : []
+        })
+        setLoading(false)
+        return
+      }
+      await loadPaymentItems(registrationId, ownerId)
+    } catch (e: any) {
+      console.error(e)
+      setLoading(false)
+    }
+  }
 
   const loadPaymentItems = async (registrationId: number, ownerId: number) => {
     setLoading(true)
@@ -100,12 +142,12 @@ export default function PaymentPage() {
               unit_price: s.unit_price,
               subtotal: s.subtotal
             })
-          }
+          })
         }
       }
 
       setItems(loadedItems)
-      await calculateDiscount(ownerId, loadedItems, undefined)
+      await recalculate(ownerId, loadedItems, undefined)
     } catch (e: any) {
       console.error(e)
     } finally {
@@ -113,7 +155,7 @@ export default function PaymentPage() {
     }
   }
 
-  const calculateDiscount = async (ownerId: number, currentItems: PaymentItem[], pkgId?: number) => {
+  const recalculate = async (ownerId: number, currentItems: PaymentItem[], pkgId?: number) => {
     const result = await window.api.payment.calculateDiscount({
       ownerId,
       items: currentItems.map(i => ({
@@ -138,14 +180,23 @@ export default function PaymentPage() {
     }
     setSelectedOwnerId(ownerId)
     if (items.length > 0) {
-      calculateDiscount(ownerId, items, selectedPackageId || undefined)
+      recalculate(ownerId, items, selectedPackageId || undefined)
     }
   }
 
   const handlePackageChange = (pkgId: number | '') => {
     setSelectedPackageId(pkgId)
     if (selectedOwnerId && items.length > 0) {
-      calculateDiscount(selectedOwnerId as number, items, pkgId || undefined)
+      recalculate(selectedOwnerId as number, items, pkgId || undefined)
+    }
+  }
+
+  const handleItemChange = (idx: number, qty: number) => {
+    const newItems = [...items]
+    newItems[idx] = { ...newItems[idx], quantity: qty, subtotal: qty * newItems[idx].unit_price }
+    setItems(newItems)
+    if (selectedOwnerId) {
+      recalculate(selectedOwnerId as number, newItems, selectedPackageId || undefined)
     }
   }
 
@@ -153,7 +204,7 @@ export default function PaymentPage() {
     const newItems = items.filter((_, i) => i !== idx)
     setItems(newItems)
     if (selectedOwnerId) {
-      calculateDiscount(selectedOwnerId as number, newItems, selectedPackageId || undefined)
+      recalculate(selectedOwnerId as number, newItems, selectedPackageId || undefined)
     }
   }
 
@@ -175,7 +226,7 @@ export default function PaymentPage() {
     const newItems = [...items, newItem]
     setItems(newItems)
     if (selectedOwnerId) {
-      calculateDiscount(selectedOwnerId as number, newItems, selectedPackageId || undefined)
+      recalculate(selectedOwnerId as number, newItems, selectedPackageId || undefined)
     }
   }
 
@@ -223,6 +274,13 @@ export default function PaymentPage() {
       await loadOwners()
       await loadQueue()
       await loadData()
+
+      const paidResult = await window.api.query(
+        'SELECT DISTINCT registration_id FROM payments WHERE registration_id IS NOT NULL'
+      )
+      if (paidResult.success && paidResult.data) {
+        setPaidRegIds(new Set(paidResult.data.map((r: any) => r.registration_id)))
+      }
     } catch (e: any) {
       alert(e.message)
     } finally {
@@ -231,6 +289,74 @@ export default function PaymentPage() {
   }
 
   const currentOwner = owners.find(o => o.id === selectedOwnerId)
+
+  if (alreadyPaid) {
+    const p = alreadyPaid.payment
+    const payItems = alreadyPaid.items || []
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="card w-full max-w-lg shadow-2xl">
+          <div className="card-header text-center !border-b-2 !border-dashed bg-green-50">
+            <div className="text-4xl mb-2">✅</div>
+            <h3 className="text-2xl font-bold text-green-700">该病例已结算</h3>
+            <p className="text-sm text-gray-500 mt-1">此病例已完成收费，无需重复支付</p>
+          </div>
+          <div className="card-body space-y-4">
+            <div className="flex justify-between items-center py-2 border-b border-dashed">
+              <span className="text-gray-500">收据编号</span>
+              <span className="font-mono font-bold">{p.receipt_number}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <span className="text-gray-500">支付金额：</span>
+                <span className="font-bold text-red-600">¥{p.final_amount?.toFixed(2)}</span>
+              </div>
+              <div>
+                <span className="text-gray-500">支付方式：</span>
+                <span className="font-semibold">
+                  {p.payment_method === 'cash' ? '💵 现金' : p.payment_method === 'insurance' ? '🏥 医保' :
+                    p.payment_method === 'wechat' ? '💚 微信' : p.payment_method === 'alipay' ? '💙 支付宝' : '💳 银行卡'}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-500">优惠金额：</span>
+                <span className="text-green-600">-¥{p.discount_amount?.toFixed(2)}</span>
+              </div>
+              <div>
+                <span className="text-gray-500">支付时间：</span>
+                <span>{p.paid_at}</span>
+              </div>
+            </div>
+
+            {payItems.length > 0 && (
+              <div className="border-t border-b border-dashed py-3 space-y-2">
+                <p className="text-sm font-semibold mb-2">收费明细</p>
+                {payItems.map((item: any, idx: number) => (
+                  <div key={idx} className="flex justify-between text-sm">
+                    <span className="text-gray-700">{item.item_name} × {item.quantity}</span>
+                    <span>¥{item.subtotal?.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {selectedReg && (
+              <div className="bg-blue-50 rounded-xl p-3 text-sm">
+                <p><span className="text-gray-500">宠物：</span>{selectedReg.pet_name}（{selectedReg.species}）</p>
+                <p><span className="text-gray-500">主人：</span>{selectedReg.owner_name}</p>
+                <p><span className="text-gray-500">医生：</span>{selectedReg.doctor_name} · {selectedReg.department_name}</p>
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <button className="btn-secondary flex-1" onClick={() => navigate('/payment')}>返回收费列表</button>
+              <button className="btn-primary flex-1" onClick={() => window.print()}>🖨️ 打印收据</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   if (receiptInfo) {
     const totalItems = items.reduce((sum, i) => sum + i.quantity, 0)
@@ -288,14 +414,12 @@ export default function PaymentPage() {
                 <span className="text-gray-500">原价合计</span>
                 <span>¥{discountResult?.originalTotal?.toFixed(2)}</span>
               </div>
-              {discountResult?.discountDetails?.map((d: string, idx: number) => (
-                <div key={idx} className="flex justify-between text-green-600">
-                  <span>🎁 {d}</span>
-                  <span>-¥{idx === 0 ? discountResult.discountAmount?.toFixed(2) : '0.00'}</span>
-                </div>
-              ))}
+              <div className="flex justify-between text-green-600">
+                <span>优惠折扣</span>
+                <span>-¥{discountResult?.discountAmount?.toFixed(2)}</span>
+              </div>
               <div className="flex justify-between py-2 border-t-2">
-                <span className="font-bold text-lg">应收金额</span>
+                <span className="font-bold text-lg">实收金额</span>
                 <span className="text-3xl font-bold text-red-600">¥{discountResult?.totalAmount?.toFixed(2)}</span>
               </div>
             </div>
@@ -321,6 +445,7 @@ export default function PaymentPage() {
                 setItems([])
                 setDiscountResult(null)
                 setSelectedPackageId('')
+                setAlreadyPaid(null)
                 navigate('/payment')
               }}>继续收费</button>
               <button className="btn-primary flex-1" onClick={() => {
@@ -348,10 +473,11 @@ export default function PaymentPage() {
                   onClick={() => {
                     setSelectedReg(reg)
                     setSelectedOwnerId(reg.owner_id)
-                    loadPaymentItems(reg.id, reg.owner_id)
+                    setSelectedPackageId('')
+                    checkAndLoadItems(reg.id, reg.owner_id)
                     navigate(`/payment/${reg.id}`)
                   }}
-                  className={`p-2 rounded-lg cursor-pointer text-sm ${
+                  className={`p-2 rounded-lg cursor-pointer text-sm transition-all ${
                     selectedReg?.id === reg.id ? 'bg-blue-50 border border-blue-200' : 'hover:bg-gray-50'
                   }`}
                 >
@@ -405,11 +531,6 @@ export default function PaymentPage() {
                     <p className="text-lg font-bold text-blue-600">¥{currentOwner.total_spent}</p>
                   </div>
                 </div>
-                {currentOwner.member_level === 'normal' && currentOwner.total_spent >= 3000 && (
-                  <p className="text-xs text-amber-600 mt-2 text-center bg-amber-50 rounded py-1">
-                    🎉 消费满¥3000可升级银卡会员！
-                  </p>
-                )}
               </div>
             )}
           </div>
@@ -448,11 +569,6 @@ export default function PaymentPage() {
                           原价 ¥{pkg.original_price} <span className="text-green-600">省 ¥{(pkg.original_price - pkg.discount_price).toFixed(0)}</span>
                         </p>
                       )}
-                      {pkg.member_level_required && pkg.member_level_required !== 'normal' && (
-                        <p className="text-xs text-amber-600 mt-1">
-                          需要{pkg.member_level_required === 'gold' ? '金卡' : '银卡'}会员
-                        </p>
-                      )}
                     </div>
                   </div>
                 </label>
@@ -463,6 +579,23 @@ export default function PaymentPage() {
       </div>
 
       <div className="col-span-6 space-y-4 overflow-y-auto">
+        {selectedReg && !alreadyPaid && (
+          <div className="card bg-blue-50 border-blue-200">
+            <div className="card-body !py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">🐾</span>
+                <div>
+                  <p className="font-bold">{selectedReg.pet_name}（{selectedReg.species} · {selectedReg.breed}）</p>
+                  <p className="text-xs text-gray-600">
+                    主人: {selectedReg.owner_name} · 医生: {selectedReg.doctor_name} · {selectedReg.department_name}
+                  </p>
+                </div>
+              </div>
+              <span className="badge-blue">No.{selectedReg.queue_number}</span>
+            </div>
+          </div>
+        )}
+
         <div className="card">
           <div className="card-header flex items-center justify-between !py-3">
             <span>收费明细</span>
@@ -476,7 +609,7 @@ export default function PaymentPage() {
             ) : items.length === 0 ? (
               <p className="text-center text-gray-400 py-12">
                 <div className="text-4xl mb-2">💰</div>
-                暂无收费项目
+                暂无收费项目，请从左侧选择待收费病例
               </p>
             ) : (
               <table className="table">
@@ -507,14 +640,8 @@ export default function PaymentPage() {
                           className="input !w-20 !py-1 text-sm"
                           value={item.quantity}
                           onChange={e => {
-                            const qty = parseInt(e.target.value) || 1
-                            const newItems = [...items]
-                            newItems[idx].quantity = qty
-                            newItems[idx].subtotal = qty * newItems[idx].unit_price
-                            setItems(newItems)
-                            if (selectedOwnerId) {
-                              calculateDiscount(selectedOwnerId as number, newItems, selectedPackageId || undefined)
-                            }
+                            const qty = Math.max(1, parseInt(e.target.value) || 1)
+                            handleItemChange(idx, qty)
                           }}
                         />
                       </td>
@@ -525,6 +652,13 @@ export default function PaymentPage() {
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr className="bg-gray-50 font-semibold">
+                    <td colSpan={4} className="text-right">小计</td>
+                    <td>¥{items.reduce((s, i) => s + i.subtotal, 0).toFixed(2)}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
               </table>
             )}
           </div>
@@ -545,9 +679,7 @@ export default function PaymentPage() {
                   key={m.key}
                   onClick={() => setPaymentMethod(m.key as any)}
                   className={`p-4 rounded-xl border-2 transition-all ${
-                    paymentMethod === m.key
-                      ? `border-${m.color}-500 bg-${m.color}-50`
-                      : 'border-gray-200 hover:border-gray-300'
+                    paymentMethod === m.key ? '' : 'border-gray-200 hover:border-gray-300'
                   }`}
                   style={paymentMethod === m.key ? {
                     borderColor: m.color === 'green' ? '#22c55e' : m.color === 'blue' ? '#3b82f6' :
@@ -622,15 +754,6 @@ export default function PaymentPage() {
             >
               {loading ? '处理中...' : `✓ 确认支付 ¥${discountResult?.totalAmount?.toFixed(2) || '0.00'}`}
             </button>
-
-            <div className="space-y-2 text-xs text-gray-500 pt-2 border-t">
-              <p>💡 温馨提示：</p>
-              <ul className="pl-4 space-y-1 list-disc">
-                <li>会员积分可兑换后续服务</li>
-                <li>金卡会员享9折，银卡会员享9.5折</li>
-                <li>电子收据可随时查看历史记录</li>
-              </ul>
-            </div>
           </div>
         </div>
       </div>

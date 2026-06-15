@@ -53,11 +53,20 @@ export default function DevicePage() {
       operator: logForm.operator || '系统'
     })
     if (result.success) {
-      alert('✅ 使用记录已提交')
+      await loadDevices()
+      await loadMaintenanceOrders()
+      const updatedDevice = devices.find(d => d.id === selectedDevice.id)
+      const newTotal = (updatedDevice?.total_run_hours || 0) + parseFloat(logForm.duration)
+      const threshold = updatedDevice?.maintenance_interval_hours || 500
+      if (newTotal >= threshold) {
+        alert(`✅ 使用记录已提交\n\n⚠️ 该设备累计运行已达 ${newTotal.toFixed(1)} 小时（维保周期 ${threshold} 小时），已自动生成待处理维保工单并分配班组！`)
+        setActiveTab('maintenance')
+      } else {
+        alert('✅ 使用记录已提交')
+      }
       setShowLogModal(false)
       setLogForm({ duration: '', operator: '' })
       setSelectedDevice(null)
-      await loadDevices()
     } else {
       alert(result.error)
     }

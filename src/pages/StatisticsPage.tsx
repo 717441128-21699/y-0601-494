@@ -19,17 +19,31 @@ export default function StatisticsPage() {
   })
   const [doctorStats, setDoctorStats] = useState<any[]>([])
   const [deptStats, setDeptStats] = useState<any[]>([])
+  const [dailyTrend, setDailyTrend] = useState<{ date: string; patients: number; income: number }[]>([])
   const [loading, setLoading] = useState(false)
 
   const loadStatistics = async () => {
     setLoading(true)
     try {
-      const [docResult, deptResult] = await Promise.all([
-        window.api.statistics.doctor(dateRange),
-        window.api.statistics.department(dateRange)
+      const params = { startDate: dateRange.start, endDate: dateRange.end }
+      const [docResult, deptResult, trendResult] = await Promise.all([
+        window.api.statistics.doctor(params),
+        window.api.statistics.department(params),
+        window.api.query(`
+          SELECT DATE(completed_at) as date,
+                 COUNT(*) as patients,
+                 COALESCE(SUM((
+                   SELECT SUM(p.final_amount) FROM payments p WHERE p.registration_id = r.id
+                 )), 0) as income
+          FROM registrations r
+          WHERE status = 'completed' AND DATE(completed_at) BETWEEN ? AND ?
+          GROUP BY DATE(completed_at)
+          ORDER BY date
+        `, [dateRange.start, dateRange.end])
       ])
       if (docResult.success) setDoctorStats(docResult.data || [])
       if (deptResult.success) setDeptStats(deptResult.data || [])
+      if (trendResult.success && trendResult.data) setDailyTrend(trendResult.data)
     } finally {
       setLoading(false)
     }
@@ -184,23 +198,28 @@ export default function StatisticsPage() {
   }
 
   const lineData = {
-    labels: Array.from({ length: 7 }, (_, i) => {
-      const d = new Date()
-      d.setDate(d.getDate() - (6 - i))
-      return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
-    }),
+    labels: dailyTrend.length > 0
+      ? dailyTrend.map(d => {
+          const parts = d.date.split('-')
+          return `${parseInt(parts[1])}月${parseInt(parts[2])}日`
+        })
+      : Array.from({ length: 7 }, (_, i) => {
+          const d = new Date()
+          d.setDate(d.getDate() - (6 - i))
+          return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+        }),
     datasets: [
       {
         label: '接诊量',
-        data: [24, 31, 28, 35, 42, 38, 45],
+        data: dailyTrend.length > 0 ? dailyTrend.map(d => d.patients) : [],
         borderColor: 'rgb(59, 130, 246)',
         backgroundColor: 'rgba(59, 130, 246, 0.1)',
         fill: true,
         tension: 0.4
       },
       {
-        label: '收入(百元)',
-        data: [48, 62, 56, 72, 88, 76, 92],
+        label: '收入(元)',
+        data: dailyTrend.length > 0 ? dailyTrend.map(d => d.income) : [],
         borderColor: 'rgb(16, 185, 129)',
         backgroundColor: 'rgba(16, 185, 129, 0.1)',
         fill: true,
