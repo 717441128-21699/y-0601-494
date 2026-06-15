@@ -37,16 +37,28 @@ export default function PaymentPage() {
         'SELECT * FROM diagnoses WHERE registration_id = ? ORDER BY diagnosis_time DESC LIMIT 1',
         [registrationId]
       )
+      const regResult = await window.api.query(
+        'SELECT urgency_level FROM registrations WHERE id = ?',
+        [registrationId]
+      )
 
       const loadedItems: PaymentItem[] = []
 
+      let registrationFee = 20
+      if (regResult.success && regResult.data && regResult.data.length > 0) {
+        const urgency = regResult.data[0].urgency_level
+        if (urgency >= 4) registrationFee = 80
+        else if (urgency >= 3) registrationFee = 50
+        else registrationFee = 20
+      }
+
       loadedItems.push({
         item_type: 'service',
-        item_id: 1,
-        item_name: '挂号费',
+        item_id: registrationFee === 80 ? 3 : registrationFee === 50 ? 2 : 1,
+        item_name: registrationFee === 80 ? '急诊挂号费' : registrationFee === 50 ? '专家挂号费' : '挂号费',
         quantity: 1,
-        unit_price: 20,
-        subtotal: 20
+        unit_price: registrationFee,
+        subtotal: registrationFee
       })
 
       if (diagResult.success && diagResult.data && diagResult.data.length > 0) {
@@ -71,10 +83,25 @@ export default function PaymentPage() {
           })
         }
 
-        loadedItems.push(
-          { item_type: 'service', item_id: 5, item_name: '生化全项检查', quantity: 1, unit_price: 280, subtotal: 280 },
-          { item_type: 'service', item_id: 4, item_name: '血常规检查', quantity: 1, unit_price: 60, subtotal: 60 }
-        )
+        const svcResult = await window.api.query(`
+          SELECT dsi.*, si.name as service_name
+          FROM diagnosis_service_items dsi
+          LEFT JOIN service_items si ON dsi.service_item_id = si.id
+          WHERE dsi.diagnosis_id = ?
+        `, [diagnosisId])
+
+        if (svcResult.success && svcResult.data) {
+          svcResult.data.forEach((s: any) => {
+            loadedItems.push({
+              item_type: 'service',
+              item_id: s.service_item_id,
+              item_name: s.service_name,
+              quantity: s.quantity,
+              unit_price: s.unit_price,
+              subtotal: s.subtotal
+            })
+          }
+        }
       }
 
       setItems(loadedItems)

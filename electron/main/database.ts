@@ -140,6 +140,17 @@ function initializeDatabase(db: Database.Database) {
       FOREIGN KEY (medicine_id) REFERENCES medicines(id)
     );
 
+    CREATE TABLE IF NOT EXISTS diagnosis_service_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      diagnosis_id INTEGER NOT NULL,
+      service_item_id INTEGER NOT NULL,
+      quantity INTEGER NOT NULL,
+      unit_price REAL NOT NULL,
+      subtotal REAL NOT NULL,
+      FOREIGN KEY (diagnosis_id) REFERENCES diagnoses(id),
+      FOREIGN KEY (service_item_id) REFERENCES service_items(id)
+    );
+
     CREATE TABLE IF NOT EXISTS service_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,

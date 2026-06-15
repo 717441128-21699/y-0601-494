@@ -346,6 +346,17 @@ function handleCreateDiagnosis(_e: any, data: {
         }
       }
 
+      if (data.serviceItems && data.serviceItems.length > 0) {
+        const svcStmt = db.prepare(`
+          INSERT INTO diagnosis_service_items 
+          (diagnosis_id, service_item_id, quantity, unit_price, subtotal)
+          VALUES (?, ?, ?, ?, ?)
+        `)
+        for (const s of data.serviceItems) {
+          svcStmt.run(diagnosisId, s.itemId, s.quantity, s.unitPrice, s.subtotal)
+        }
+      }
+
       db.prepare(`
         UPDATE registrations SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?
       `).run(data.registrationId)
@@ -481,9 +492,42 @@ function handleLogDeviceUsage(_e: any, data: { deviceId: number; durationHours: 
       `).run(data.durationHours, data.deviceId)
 
       const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(data.deviceId) as any
-      const hoursSinceLast = device.total_run_hours
-      if (hoursSinceLast >= device.maintenance_interval_hours) {
+      const newTotalHours = device.total_run_hours + data.durationHours
+
+      if (newTotalHours >= device.maintenance_interval_hours) {
         db.prepare(`UPDATE devices SET status = 'needs_maintenance' WHERE id = ?`).run(data.deviceId)
+
+        const lastOrder = db.prepare(`
+          SELECT scheduled_date FROM maintenance_orders
+          WHERE device_id = ? AND status != 'cancelled'
+          ORDER BY created_at DESC LIMIT 1
+        `).get(data.deviceId) as any
+
+        const needNewOrder = !lastOrder ||
+          Math.floor((new Date().getTime() - new Date(lastOrder.scheduled_date).getTime()) / (24 * 60 * 60 * 1000)) > 30
+
+        if (needNewOrder) {
+          const teams = db.prepare('SELECT * FROM maintenance_teams').all() as any[]
+          const deptId = device.department_id
+          let teamIndex = 0
+          if (deptId === 7) teamIndex = 2
+          else if (deptId === 8) teamIndex = 3
+          else teamIndex = (device.id % teams.length)
+
+          const team = teams[teamIndex % teams.length]
+          const priority = newTotalHours >= device.maintenance_interval_hours * 1.2 ? 'high' : 'normal'
+          const scheduledDate = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+
+          db.prepare(`
+            INSERT INTO maintenance_orders
+            (device_id, team_id, order_type, priority, description, status, scheduled_date)
+            VALUES (?, ?, 'routine', ?, ?, 'pending', ?)
+          `).run(
+            device.id, team.id, priority,
+            `设备【${device.name}】累计运行${newTotalHours.toFixed(1)}小时，已达维保周期（${device.maintenance_interval_hours}小时），请及时安排维护保养`,
+            scheduledDate
+          )
+        }
       }
     })
     tx()
@@ -561,18 +605,21 @@ function handleDoctorStatistics(_e: any, data: { startDate?: string; endDate?: s
         COUNT(DISTINCT r.id) as total_patients,
         AVG(CASE WHEN r.completed_at IS NOT NULL AND r.called_at IS NOT NULL 
             THEN (JULIANDAY(r.completed_at) - JULIANDAY(r.called_at)) * 24 * 60 END) as avg_duration_minutes,
-        COALESCE(SUM(CASE WHEN pi.item_type IN ('service', 'medicine') THEN pi.subtotal ELSE 0 END), 0) as total_income
+        COALESCE((
+          SELECT SUM(p.final_amount) 
+          FROM payments p
+          WHERE p.registration_id IN (
+            SELECT DISTINCT r2.id FROM registrations r2 WHERE r2.doctor_id = d.id
+              AND DATE(r2.completed_at) BETWEEN ? AND ?
+          )
+        ), 0) as total_income
       FROM doctors d
       LEFT JOIN departments dep ON d.department_id = dep.id
       LEFT JOIN registrations r ON d.id = r.doctor_id 
         AND DATE(r.completed_at) BETWEEN ? AND ?
-      LEFT JOIN diagnoses diag ON r.id = diag.registration_id
-      LEFT JOIN prescriptions p ON diag.id = p.diagnosis_id
-      LEFT JOIN payments pay ON r.id = pay.registration_id
-      LEFT JOIN payment_items pi ON pay.id = pi.payment_id
       GROUP BY d.id
       ORDER BY total_patients DESC
-    `).all(startDate, endDate)
+    `).all(startDate, endDate, startDate, endDate)
 
     return { success: true, data: stats }
   } catch (error: any) {
@@ -592,16 +639,21 @@ function handleDepartmentStatistics(_e: any, data: { startDate?: string; endDate
         COUNT(DISTINCT doc.id) as doctor_count,
         AVG(CASE WHEN r.completed_at IS NOT NULL AND r.called_at IS NOT NULL 
             THEN (JULIANDAY(r.completed_at) - JULIANDAY(r.called_at)) * 24 * 60 END) as avg_duration_minutes,
-        COALESCE(SUM(pi.subtotal), 0) as total_income
+        COALESCE((
+          SELECT SUM(p.final_amount) 
+          FROM payments p
+          WHERE p.registration_id IN (
+            SELECT DISTINCT r2.id FROM registrations r2 WHERE r2.department_id = d.id
+              AND DATE(r2.completed_at) BETWEEN ? AND ?
+          )
+        ), 0) as total_income
       FROM departments d
       LEFT JOIN registrations r ON d.id = r.department_id 
         AND DATE(r.completed_at) BETWEEN ? AND ?
       LEFT JOIN doctors doc ON d.id = doc.department_id
-      LEFT JOIN payments pay ON r.id = pay.registration_id
-      LEFT JOIN payment_items pi ON pay.id = pi.payment_id
       GROUP BY d.id
       ORDER BY total_patients DESC
-    `).all(startDate, endDate)
+    `).all(startDate, endDate, startDate, endDate)
 
     return { success: true, data: stats }
   } catch (error: any) {
